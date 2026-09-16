@@ -13,9 +13,9 @@ Rules:
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date, datetime, time, timedelta
@@ -30,6 +30,75 @@ except ImportError as e:
 
 STATE_FILENAME = "scheduler_state.json"
 LOCK_FILENAME = "scheduler.lock"
+
+# fcntl.flock (POSIX) has no Windows equivalent; msvcrt.locking is the native
+# substitute. It raises plain OSError on a held lock (not BlockingIOError), so
+# the Windows path re-raises as BlockingIOError to keep main()'s catch, below,
+# identical on both platforms. Verified empirically: two concurrent processes,
+# the second one raises exactly while the first holds the lock and succeeds
+# right after it's released.
+if os.name == "nt":
+    import msvcrt
+
+    def _lock_exclusive_nonblocking(fp) -> None:
+        try:
+            fp.seek(0)
+            msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise BlockingIOError(str(exc)) from exc
+
+    def _unlock(fp) -> None:
+        try:
+            fp.seek(0)
+            msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _lock_exclusive_nonblocking(fp) -> None:
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fp) -> None:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+
+
+def _bash_bin() -> str:
+    """Git-for-Windows bash on Windows, PATH-resolved bash elsewhere.
+
+    Verified empirically: under Task Scheduler's own process environment (not
+    an interactive Git Bash session's PATH), a bare shutil.which("bash") can
+    resolve to the WSL app-execution-alias stub in WindowsApps instead of Git
+    Bash - which then mangles a Windows-style script path into gibberish and
+    runs in a shell that doesn't even support `pipefail`. Git Bash's own
+    bash.exe handles a native Windows path in argv correctly (confirmed
+    separately), so once the RIGHT bash is resolved there is no other fix
+    needed.
+    """
+    if os.name == "nt":
+        program_files = os.environ.get("ProgramFiles", "")
+        candidates = [
+            os.environ.get("JOBFINDEROS_BASH_BIN", ""),
+            str(Path(program_files) / "Git" / "bin" / "bash.exe"),
+            str(Path(program_files) / "Git" / "usr" / "bin" / "bash.exe"),
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+        found = shutil.which("bash")
+        if found and "WindowsApps" not in found and "System32" not in found:
+            return found
+        return found or "bash"
+    return shutil.which("bash") or "/bin/bash"
+
+
+def _venv_bin_dir(root: Path) -> Path:
+    """venv layout differs by platform: POSIX is bin/, Windows is Scripts/."""
+    win_dir = root / ".venv" / "Scripts"
+    return win_dir if win_dir.is_dir() else root / ".venv" / "bin"
 
 
 def project_root() -> Path:
@@ -169,9 +238,9 @@ def daily_is_due(
 
 def run_skill(root: Path, label: str, skill: str) -> int:
     env = os.environ.copy()
-    env["PATH"] = f"{root / '.venv' / 'bin'}:{env.get('PATH', '')}"
+    env["PATH"] = f"{_venv_bin_dir(root)}{os.pathsep}{env.get('PATH', '')}"
     return subprocess.run(
-        ["/bin/bash", str(root / "scripts" / "JobFinderOS_run_skill.sh"), label, skill],
+        [_bash_bin(), str(root / "scripts" / "JobFinderOS_run_skill.sh"), label, skill],
         cwd=str(root),
         env=env,
     ).returncode
@@ -180,7 +249,7 @@ def run_skill(root: Path, label: str, skill: str) -> int:
 def run_watch_guards(root: Path) -> None:
     """Invoke the priority-function watch guard; self-skips when not due."""
     env = os.environ.copy()
-    env["PATH"] = f"{root / '.venv' / 'bin'}:{env.get('PATH', '')}"
+    env["PATH"] = f"{_venv_bin_dir(root)}{os.pathsep}{env.get('PATH', '')}"
     subprocess.run(
         [sys.executable, str(root / "scripts" / "jobfinderos_priority_watch.py")],
         cwd=str(root),
@@ -191,9 +260,9 @@ def run_watch_guards(root: Path) -> None:
 def run_script(root: Path, script: str) -> int:
     path = root / "scripts" / script
     env = os.environ.copy()
-    env["PATH"] = f"{root / '.venv' / 'bin'}:{env.get('PATH', '')}"
+    env["PATH"] = f"{_venv_bin_dir(root)}{os.pathsep}{env.get('PATH', '')}"
     return subprocess.run(
-        ["/bin/bash", str(path)],
+        [_bash_bin(), str(path)],
         cwd=str(root),
         env=env,
     ).returncode
@@ -210,7 +279,7 @@ def main() -> int:
 
     lock_fp = open(lock_path(), "a+", encoding="utf-8")
     try:
-        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_exclusive_nonblocking(lock_fp)
     except BlockingIOError:
         append_run_log(root, "scheduler-tick", "skipped (lock held)")
         print("scheduler_tick: another instance is running; exit 0", file=sys.stderr)
@@ -276,10 +345,7 @@ def main() -> int:
         run_watch_guards(root)
         return exit_rc
     finally:
-        try:
-            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass
+        _unlock(lock_fp)
         lock_fp.close()
 
 

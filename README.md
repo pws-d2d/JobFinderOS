@@ -80,7 +80,7 @@ pip install -r requirements.txt
 claude
 ```
 
-The two Python lines need Python 3.11 or newer. They only serve the optional scheduler and helper scripts, so if you never plan to schedule anything you can skip them and go straight to `claude`.
+The two Python lines need Python 3.11 or newer. They only serve the optional scheduler and helper scripts, so if you never plan to schedule anything you can skip them and go straight to `claude`. On Windows, run this from Git Bash: `python -m venv .venv && source .venv/Scripts/activate` then `pip install -r requirements.txt` (or the `uv` equivalent, `uv venv && uv pip install -r requirements.txt`, if that's your usual tool — same `.venv`, same effect).
 
 ### Step 3. Teach it who you are
 
@@ -115,18 +115,26 @@ Each of these is independent. Add them when you want them.
 
 - **Obsidian.** Open `vault/` as a vault in [Obsidian](https://obsidian.md) to read the notes with working links. Any text editor works too.
 - **Gmail.** Connect Gmail as an MCP connector in claude.ai. Coach can then triage recruiter email, spot interview invitations, and detect rejections. It is instructed to read only; Section 5 explains what that rests on.
-- **A schedule (macOS only).** Drafts are copied to the clipboard with `pbcopy` and the scheduler uses launchd, so this part is Mac-specific. Elsewhere, drafts still land in the vault and you run the skills by hand.
+- **A schedule (macOS or Windows).** The scheduler itself (`scheduler_tick.py`) is the same on both; only what fires it on an interval differs.
+
+  macOS, via launchd:
 
   ```bash
   bash scripts/JobFinderOS_install_launchd.sh
   ```
 
-  One LaunchAgent ticks every 30 minutes. When a window in `config/scheduler.yaml` comes due it runs `/jobs-daily` (every day), `/mark-weekly` (once a week), and a narrow weekday watch on your priority function. Your Mac has to be awake. A missed run catches up on the next tick. Runs are logged to `logs/` and mirrored to `vault/Automation/`.
+  Windows, via Task Scheduler (run from PowerShell):
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\JobFinderOS_install_task_scheduler.ps1
+  ```
+
+  Either way, it ticks every 30 minutes. When a window in `config/scheduler.yaml` comes due it runs `/jobs-daily` (every day), `/mark-weekly` (once a week), and a narrow weekday watch on your priority function. You have to be logged in. A missed run catches up on the next tick. Runs are logged to `logs/` and mirrored to `vault/Automation/`. One thing stays Mac-specific: drafting skills (`/draft-message`, `/voice-check`) are instructed to use `pbcopy`/`pbpaste` for the clipboard, which don't exist on Windows — drafts still land in the vault either way, but on Windows the agent needs to substitute a Windows clipboard command itself when you run one of those skills.
 
   Check it is working:
 
   ```bash
-  python3 scripts/scheduler_tick.py --dry-run
+  python3 scripts/scheduler_tick.py --dry-run   # python on Windows
   bash scripts/verify_local_automation.sh
   ```
 

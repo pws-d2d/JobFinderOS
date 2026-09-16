@@ -89,23 +89,32 @@ fi
 
 "$ROOT/scripts/JobFinderOS_log_run.sh" "$LABEL" start
 set +e
+# MSYS_NO_PATHCONV is scoped to just this command: Git Bash/MSYS rewrites a
+# bare leading-slash arg like "/jobs-scout" into a Windows path before claude
+# ever sees it, but the fix-backslash-paths call below is a real POSIX path
+# being passed to a native python.exe, which *needs* that same conversion —
+# exporting the var for the whole script broke that call. No-op on real
+# POSIX systems (no MSYS there).
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$TIMEOUT_SEC" "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < /dev/null
+  MSYS_NO_PATHCONV=1 timeout "$TIMEOUT_SEC" "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < /dev/null
   ec=$?
   if [[ "$ec" -eq 124 ]]; then
     "$ROOT/scripts/JobFinderOS_log_run.sh" "$LABEL" "failed (timeout ${TIMEOUT_SEC}s)"
     exit "$ec"
   fi
 else
-  "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < /dev/null
+  MSYS_NO_PATHCONV=1 "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" < /dev/null
   ec=$?
 fi
 set -e
 
 if [[ "$ec" -eq 0 ]]; then
   "$ROOT/scripts/JobFinderOS_log_run.sh" "$LABEL" completed
+  # venv layout differs by platform: POSIX puts the interpreter in bin/,
+  # Windows (including a uv venv run under Git Bash) puts it in Scripts/.
   PY="${ROOT}/.venv/bin/python"
-  [[ -x "$PY" ]] || PY=python3
+  [[ -x "$PY" ]] || PY="${ROOT}/.venv/Scripts/python.exe"
+  [[ -x "$PY" ]] || PY="$(command -v python3 || command -v python || true)"
   # Repair any literal-backslash vault paths a skill run may have written
   "$PY" "$ROOT/scripts/jobfinderos_fix_backslash_paths.py" || true
 else

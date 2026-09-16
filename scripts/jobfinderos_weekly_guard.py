@@ -4,12 +4,39 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _bash_bin() -> str:
+    """Git-for-Windows bash on Windows, PATH-resolved bash elsewhere.
+
+    Verified empirically: under Task Scheduler's own process environment (not
+    an interactive Git Bash session's PATH), a bare shutil.which("bash") can
+    resolve to the WSL app-execution-alias stub in WindowsApps instead of Git
+    Bash - which then mangles a Windows-style script path into gibberish and
+    runs in a shell that doesn't even support `pipefail`.
+    """
+    if os.name == "nt":
+        program_files = os.environ.get("ProgramFiles", "")
+        candidates = [
+            os.environ.get("JOBFINDEROS_BASH_BIN", ""),
+            str(Path(program_files) / "Git" / "bin" / "bash.exe"),
+            str(Path(program_files) / "Git" / "usr" / "bin" / "bash.exe"),
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+        found = shutil.which("bash")
+        if found and "WindowsApps" not in found and "System32" not in found:
+            return found
+        return found or "bash"
+    return shutil.which("bash") or "/bin/bash"
 
 def _scheduler_cfg() -> dict:
     """config/scheduler.yaml as a dict ({} if missing or PyYAML absent)."""
@@ -40,6 +67,30 @@ def emit(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False))
 
 
+def pid_alive(pid: int) -> bool:
+    """Cross-platform liveness check. os.kill(pid, 0) is unreliable on Windows for
+    an already-exited pid (verified empirically: it neither raises nor reports the
+    true state), so Windows gets its own check via GetExitCodeProcess."""
+    if os.name == 'nt':
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            STILL_ACTIVE = 259
+            exit_code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def lock_status(lock_path: Path) -> str | None:
     if not lock_path.exists():
         return None
@@ -48,13 +99,8 @@ def lock_status(lock_path: Path) -> str | None:
     except ValueError:
         lock_path.unlink(missing_ok=True)
         return None
-    if pid > 0:
-        try:
-            os.kill(pid, 0)
-            return f'in_progress:{pid}'
-        except OSError:
-            lock_path.unlink(missing_ok=True)
-            return None
+    if pid > 0 and pid_alive(pid):
+        return f'in_progress:{pid}'
     lock_path.unlink(missing_ok=True)
     return None
 
@@ -97,7 +143,7 @@ def main() -> None:
         return
 
     try:
-        cmd = ['bash', 'scripts/JobFinderOS_run_skill.sh', 'mark-weekly', 'mark-weekly']
+        cmd = [_bash_bin(), 'scripts/JobFinderOS_run_skill.sh', 'mark-weekly', 'mark-weekly']
         proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         if proc.returncode != 0:
             emit({
