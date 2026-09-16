@@ -80,6 +80,7 @@ Before any draft goes to clipboard or vault, self-check that it does not pattern
 
 - **Never send email on the candidate's behalf.** Replies and outreach go to the **clipboard (`pbcopy`) and/or vault notes**. The candidate sends everything manually from their own client.
 - Never create Gmail drafts either; the Gmail MCP connector is for reading threads. No code path in this repo calls a send API.
+- This is agent doctrine, not a technical boundary: any run with a send-capable Gmail tool present is only as safe as the model's adherence to this instruction while reading untrusted inbound email. Unattended runs (`jobs-email`, `jobs-daily`, `jobs-digest`, `checkin`, `email-watch`) additionally require the one-time Gmail tool-scoping step in `vault/Automation/JobFinderOS — Local Runbook.md` ("Unattended tool boundaries"), which hard-removes send/draft/trash tools via `JOBFINDEROS_DISALLOWED_TOOLS`. Until that step is done, treat "never send" as unenforced for scheduled runs.
 
 ---
 

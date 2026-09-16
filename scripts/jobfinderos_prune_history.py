@@ -18,12 +18,14 @@ Safety rails:
   * The NEWEST file in each rule group is always kept, however old - the skills
     read "the most recent" digest/pulse, and a stalled pipeline must not lose
     its only copy.
-  * Deletions are committed on their own and pushed (same HTTPS/keychain flow
-    as jobfinderos_ats_poll.py). --dry-run prints, touches nothing.
+  * Deletions are committed locally so `git show` still recovers them. Pushing
+    to origin is opt-in (same convention as jobfinderos_ats_poll.py): nothing
+    unattended reaches the remote unless the candidate passes --push by hand.
+    --dry-run prints, touches nothing.
 
 Flags:
   --dry-run   print what would be deleted, change nothing
-  --no-push   delete + commit, but skip the push (local testing)
+  --push      after deleting + committing, also push to origin/main (off by default)
 """
 
 from __future__ import annotations
@@ -133,7 +135,7 @@ def append_run_log(n: int) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--no-push", action="store_true")
+    ap.add_argument("--push", action="store_true", help="also push the deletion commit to origin/main (off by default)")
     args = ap.parse_args()
 
     today = now().date()
@@ -146,9 +148,10 @@ def main() -> int:
         log(f"DRY RUN - {len(doomed)} file(s) would be deleted")
         return 0
 
-    pull = git("pull", "--rebase", "--autostash", "origin", "main")
-    if pull.returncode != 0:
-        log(f"WARN: pull failed, continuing: {pull.stderr.strip()[:200]}")
+    if args.push:
+        pull = git("pull", "--rebase", "--autostash", "origin", "main")
+        if pull.returncode != 0:
+            log(f"WARN: pull failed, continuing: {pull.stderr.strip()[:200]}")
 
     for p in doomed:
         try:
@@ -167,8 +170,8 @@ def main() -> int:
     if c.returncode != 0:
         log(f"WARN: commit failed: {c.stderr.strip()[:200]}")
         return 1
-    if args.no_push:
-        log(f"committed {len(doomed)} deletions (push skipped)")
+    if not args.push:
+        log(f"committed {len(doomed)} deletions locally (push skipped; pass --push to also push to origin/main)")
         return 0
     p = git("push", "origin", "main")
     if p.returncode != 0:
